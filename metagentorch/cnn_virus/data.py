@@ -38,13 +38,18 @@ from .. import __file__
 CODE_ROOT = Path(__file__).parents[0]
 PACKAGE_ROOT = Path(__file__).parents[1]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 21
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 22
 class OriginalLabels:
-    """Converts labels to species name for original data"""
-    def __init__(self, p2mapping=None):
+    """Converts between labels and species name as per original training dataset"""
+    def __init__(
+        self, 
+        p2mapping:Path|None = None   # Path to the mapping file. Uses `virus_name_mapping` by default
+        ):
         if p2mapping is None:
             p2mapping = ProjectFileSystem().data / 'CNN_Virus_data/virus_name_mapping'
-        assert p2mapping.is_file()
+        else:
+            p2mapping = safe_path(p2mapping)
+        if not p2mapping.is_file(): raise FileNotFoundError(f"Mapping file not found at {p2mapping}")
         df = pd.read_csv(p2mapping, sep='\t', header=None, names=['species', 'label'])
         self._label2species = df['species'].to_list()
         self._label2species.append('Unknown Virus Species')
@@ -53,18 +58,20 @@ class OriginalLabels:
 
     def search(self, s:str  # string to search through all original virus species
                        ):
-        """Prints all species whose name contains the passed string `s`"""
+        """Prints all species whose name contains the passed string, with their numerical label"""
         print('\n'.join([f"{k}. Label: {v}" for k,v in self._species2label.items() if s in k.lower()]))
 
     def label2species(self, n:int # label to convert to species name
                       ):
+        """Converts a numerical label into the correpsonding species label"""
         return self._label2species[n]
 
     def species2label(self, s:str  # string to convert to label
                       ):
+        """Converts a species name into the corresponding label number"""
         return self._species2label[s]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 39
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 43
 class FastaFileReader(TextFileBaseReader):
     """Wrap a FASTA file and retrieve its content in raw format and parsed format"""
     def __init__(
@@ -148,7 +155,7 @@ class FastaFileReader(TextFileBaseReader):
         return i+1
 
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 87
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 91
 class FastqFileReader(TextFileBaseReader):
     """Iterator going through a fastq file's sequences and return each section + prob error as a dict"""
     def __init__(
@@ -218,7 +225,7 @@ class FastqFileReader(TextFileBaseReader):
 
         return parsed
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 102
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 106
 class AlnFileReader(TextFileBaseReader):
     """Iterator going through an ALN file"""
     def __init__(
@@ -415,9 +422,9 @@ class AlnFileReader(TextFileBaseReader):
             # We used the iterator, now we need to reset it to make all lines available
             self.reset_iterator()
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 139
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 143
 class TextFileDataset(IterableDataset):
-    """Load data from the text file and create BHE sequence tensor and label,position OHE tensors"""
+    """Load data from text file and yield (BHE sequence tensor, (label OHE tensor, position OHE tensor))"""
 
     base2encoding = {
         'A': [1,0,0,0,0], 
@@ -439,7 +446,10 @@ class TextFileDataset(IterableDataset):
     def __iter__(self):
         with open(self.p2file, 'r') as f:
             for line in f:
-                seq, lbl, pos = line.strip().split('\t')
+                # wi = torch.utils.data.get_worker_info()
+                # if wi:
+                #     print(f"{wi.id} loading {line}")
+                seq, lbl, pos = line.replace('\n','').strip().split('\t')
                 seq_bhe = torch.tensor(list(map(self._bhe_fn, seq)))
                 lbl_ohe = torch.zeros(self.nb_labels)
                 lbl_ohe[int(lbl)] = 1
@@ -451,7 +461,7 @@ class TextFileDataset(IterableDataset):
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 147
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 152
 class AlnFileDataset(IterableDataset):
     """Load data and metadata from ALN file, yield BHE sequence, OHE label, OHE position tensors + metadata
 
@@ -505,7 +515,7 @@ class AlnFileDataset(IterableDataset):
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 156
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 161
 def combine_predictions(
     labels:torch.Tensor,         # Label predictions for a set of 50-mer corresponding to a single k-mer
     label_probs: torch.Tensor,   # Probabilities for the labels
@@ -534,7 +544,7 @@ def combine_predictions(
         combined_pos = counter_pos.most_common(1)[0][0]
         return combined_label, combined_pos
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 157
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 162
 def combine_prediction_batch(
     probs_elements: tuple[torch.Tensor, torch.Tensor]  # Tuple of label and position probabilities for a batch of 50-mer
     ):
