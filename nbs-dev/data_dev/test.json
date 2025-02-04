@@ -1,0 +1,14 @@
+{
+    "item 1": {
+        "keys": "key key key key",
+        "pattern": "pattern 1"
+    },
+    "item 2": {
+        "keys": "key key key key",
+        "pattern": "pattern 2"
+    },
+    "item 3": {
+        "keys": "key key key key",
+        "pattern": "pattern 3"
+    }
+}
