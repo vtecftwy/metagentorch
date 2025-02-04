@@ -5,18 +5,18 @@
 # %% auto 0
 __all__ = ['CODE_ROOT', 'PACKAGE_ROOT', 'setup_nb', 'update_dev_cfg_file']
 
-# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 2
+# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 3
 # import dependencies
 from fastcore.utils import run
 from pathlib import Path
 
-# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 3
+# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 4
 # Retrieve the package root
 from .. import __file__
 CODE_ROOT = Path(__file__).parents[0]
 PACKAGE_ROOT = Path(__file__).parents[1]
 
-# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 5
+# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 6
 def setup_nb(_dev=False) -> tuple:         # (colab, path to data root, path to data)
     """Sets up colab or local environment and corresponding paths to data root directory and cnn virus data"""
     try:
@@ -49,7 +49,7 @@ def setup_nb(_dev=False) -> tuple:         # (colab, path to data root, path to 
     if not p2data.is_dir(): raise ValueError(f"{p2data} is not a directory")
     return ON_COLAB, p2dataroot, p2data
 
-# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 8
+# %% ../../nbs-dev/03_cnn_virus_utils.ipynb 9
 def update_dev_cfg_file():
     """Update the metagentorch configuration file used for development, to point to the correct package root and data directory"""
     with open(PACKAGE_ROOT / 'nbs-dev/metagentorch-dev.cfg', 'w') as fp:
