@@ -4,7 +4,8 @@
 
 # %% auto 0
 __all__ = ['CODE_ROOT', 'PACKAGE_ROOT', 'OriginalLabels', 'FastaFileReader', 'FastqFileReader', 'AlnFileReader',
-           'TextFileDataset', 'AlnFileDataset', 'combine_predictions', 'combine_prediction_batch']
+           'TextFileDataset', 'AlnFileDataset', 'split_kmer_batch_into_50mers', 'combine_predictions',
+           'combine_prediction_batch']
 
 # %% ../../nbs-dev/03_cnn_virus_data.ipynb 3
 import collections
@@ -516,77 +517,92 @@ class AlnFileDataset(IterableDataset):
         return self.base2encoding[base]
 
 # %% ../../nbs-dev/03_cnn_virus_data.ipynb 161
+def split_kmer_batch_into_50mers(
+    kmer: torch.Tensor        # tensor representing a batch of k-mer reads, BHE format, shape [b, k, 5]
+    ) -> torch.Tensor:
+    """Convert a batch of k-mer reads into 50-mer reads, by shifting the k-mer one base at a time.
+
+    Shapes: for a batch of `b` k-mer reads, returns a batch of `b * (k - 49)` 50-mer reads
+
+    Technical Note: we use advanced indexing of the tensor to create the 50-mer and roll them, with no loop.
+    """
+    b = kmer.shape[0]
+    k = kmer.shape[1]
+    n = k - 49
+    # Create an array of indices for rolling
+    idx_rows = np.arange(n)[:, None]    # shape (n, 1) broadcast n rows to create the split effect
+    idx_bases = np.arange(k)            # shape (k) creates the shifting effect
+    indices = idx_rows + idx_bases      # shape (n, k)
+    rolled_indices = indices  % k       # shape (n, k) Modulo to create the rolling effect
+
+    # Create a rolled tensor using broadcasting
+    rolled_tensor = kmer[:, rolled_indices, :].reshape(-1,k, 5)
+
+    return rolled_tensor[:, :50,:] # keep only the first 50 bases
+
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 181
 def combine_predictions(
-    labels:torch.Tensor,         # Label predictions for a set of 50-mer corresponding to a single k-mer
-    label_probs: torch.Tensor,   # Probabilities for the labels
-    positions: torch.Tensor      # Position predictions for a set of 50-mer corresponding to a single k-mer
-    ):
-    """Combine set of 50-mer predictions into one final prediction for label and position"""
-
-    # Filter our any prediction with low predicted probability 
-    valid_preds_mask = torch.max(label_probs, dim=1) >= 0.9
-    valid_labels = labels[valid_preds_mask].numpy()
-    valid_positions = positions[valid_preds_mask].numpy()
-
-    # Return prediction outside the label and position ranges if no valid prediction
-    if len(valid_labels) == 0:
-        return 187, 10
-
-    # Take most frequent label, and most frequent position for the selected label
-    else:
-        unique_labels, _, counts = valid_labels.unique(return_counts=True)
-        max_count_index = counts.argmax()
-        combined_label = unique_labels[max_count_index].numpy()
-
-        df = pd.DataFrame({'labels': valid_labels, 'positions': valid_positions})
-        gb = df.groupby('labels')
-        counter_pos = collections.Counter(df.positions.iloc[gb.groups[combined_label]].tolist())
-        combined_pos = counter_pos.most_common(1)[0][0]
-        return combined_label, combined_pos
-
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 162
-def combine_prediction_batch(
-    probs_elements: tuple[torch.Tensor, torch.Tensor]  # Tuple of label and position probabilities for a batch of 50-mer
+    label_probs: torch.Tensor,   # Probabilities for the labels classes for each 50-mer
+    pos_probs: torch.Tensor,     # Probabolities for the position classes for each 50-mer
+    threshold: float = 0.9       # Threshold to consider a prediction as valid
     ):
     """Combine a batch of 50-mer probabilities into one batch of final prediction for label and position
 
-    Note: the input must be reshape to (batch_size, k, n) where n is the number of labels or positions
+    Note: the input must be of shape (batch_size, n, c) where n is k-49 and c is the nb of labels or positions
     """
-
-    label_probs = probs_elements[0]
-    position_probs = probs_elements[1]
-
-    labels_preds = torch.argmax(label_probs, dim=1)
-    positions_preds = torch.argmax(position_probs, dim=1)
-
-    valid_labels_filter = torch.max(label_probs, dim=1) > 0.9
-    valid_labels_preds = labels_preds[valid_labels_filter]
+    INVALID = 9999
+    is_batch = True
     
-    valid_positions_preds = positions_preds[valid_labels_filter]
+    assert label_probs.dim() == pos_probs.dim(), "Input do not have the same nb of dimensions"
 
+    if label_probs.dim() != 3:
+        is_batch = False
+        print('Converting probability tensors to 3 dimensions')
+        label_probs = label_probs.unsqueeze(0)
+        pos_probs = pos_probs.unsqueeze(0)
 
-    if valid_labels_preds.shape[0] == 0:
-        combined_label = torch.tensor(187, dtype=torch.int64).view(1)
-        combined_position = torch.tensor(10, dtype=torch.int64).view(1)
+    # Extract the prediction for each 50-mer read
+    label_preds = label_probs.argmax(dim=2) # shape (bs, nb_50mers)
+    pos_preds = pos_probs.argmax(dim=2)
+    # print(label_preds.shape, pos_preds.shape, label_probs.shape, pos_probs.shape)
 
-    else:
-        uniques, _, counts = valid_labels_preds.unique(return_counts=True)
-        max_count_index = counts.argmax()
-        combined_label = uniques[max_count_index]
+    # Identify reads with too low prediction probability and replace their prediction by INVALID
+    invalid_labels_filter = label_probs.max(dim=2).values <= threshold
+    # print(invalid_labels_filter.shape)
+    label_preds[invalid_labels_filter] = INVALID
+    pos_preds[invalid_labels_filter] = INVALID
 
-        # filter which reads give the majority label prediction
-        combined_label_filter = valid_labels_preds == combined_label
+    def most_common_value(preds, invalid_filter):
+        # print(f"_preds {preds.shape}:\n",preds)
+        # Get unique values and their counts for the entire tensor
+        unique_values, inverse_indices = torch.unique(preds, return_inverse=True)
+        inverse_indices = inverse_indices.view(preds.shape)
+        # print(f"unique_values {unique_values.shape}:\n",unique_values)
+        # print(f"inverse_indices {inverse_indices.shape}:\n",inverse_indices)
 
-        # pick the corresponding position predictions
-        filtered_positions = valid_positions_preds[combined_label_filter]
-        unique_positions, counts = filtered_positions.unique(return_counts=True)
-        if unique_positions.numel() > 0:  # Check if there are any unique positions
-            max_count_index = counts.argmax()
-            combined_position = unique_positions[max_count_index]
-        else:
-            combined_position = torch.tensor(10, dtype=torch.int64)  # Default value if no unique positions
+        # Create a tensor to hold the counts (shape (bs, nb_unique_values_across_the_batch))
+        counts = torch.zeros((preds.shape[0], unique_values.shape[0]), dtype=torch.int64)
+        # Count occurrences of each unique value per row
+        counts.scatter_add_(dim=1, index=inverse_indices, src=torch.ones_like(inverse_indices, dtype=torch.int64))
+        # print(f"counts {counts.shape}:\n", counts)
 
-        # Step 4: Concatenate combined_label and combined_position
-        combined_pred = torch.cat((combined_label.view(-1), combined_position.view(-1)))
+        # get value most voted per 50-read (vertical tensor), excluding the placeholder INVALID
+        most_voted_value = unique_values[counts[:, :-1].argmax(dim=1)][:, None]
+        # print(f"most_voted_value {most_voted_value.shape}:\n", most_voted_value)
+        return most_voted_value
 
-    return combined_pred
+    combined_labels = most_common_value(label_preds, invalid_labels_filter)
+    combined_pos = most_common_value(pos_preds, invalid_labels_filter)
+
+    # Concatenate combined_label and combined_position
+    combined_preds = torch.cat([combined_labels, combined_pos], dim=1)
+
+    return combined_preds if is_batch else combined_preds.squeeze(0)
+
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 188
+def combine_prediction_batch(*args, **kwargs):
+    """Deprecated"""
+    msg = """
+    `combine_prediction_batch` is deprecated. 
+    Use `combine_predictions` instead, with same capabilities and more."""
+    raise DeprecationWarning(msg)
