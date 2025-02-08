@@ -1,18 +1,18 @@
 {
     "2591237:ncbi:1": {
-        "accession": "MK211378",
-        "organism": "Coronavirus BtRs-BetaCoV/YN2018D",
         "seqid": "2591237:ncbi:1",
-        "seqnb": "1",
+        "taxonomyid": "2591237",
         "source": "ncbi",
-        "taxonomyid": "2591237"
+        "seqnb": "1",
+        "accession": "MK211378",
+        "organism": "Coronavirus BtRs-BetaCoV/YN2018D"
     },
     "11128:ncbi:2": {
-        "accession": "LC494191",
-        "organism": "Bovine coronavirus",
         "seqid": "11128:ncbi:2",
-        "seqnb": "2",
+        "taxonomyid": "11128",
         "source": "ncbi",
-        "taxonomyid": "11128"
+        "seqnb": "2",
+        "accession": "LC494191",
+        "organism": "Bovine coronavirus"
     }
 }
