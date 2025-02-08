@@ -26,9 +26,10 @@ from keras.models import Sequential, Model, load_model
 
 # %% ../../nbs-dev/03_cnn_virus_architecture.ipynb 11
 def create_model_original(
-    load_parameters: bool = True, # Load pretrained weights when True
+    load_parameters: bool = True,       # Load pretrained weights when True
     path2parameters: Path|None = None,  # Path to pretrained weights, defaults to project CNN Virus weights
-    ) -> keras.Model:          # New instance of an original paper architecture
+    to_gpu: bool = True,                # Move model to GPU if possible when True
+    ) -> keras.Model:                   # New instance of an original paper architecture
     """Build a CNN model as per CNN Virus paper"""
 
     print("Creating CNN Model (Original)")
@@ -66,4 +67,9 @@ def create_model_original(
         print("Created pretrained model")
     else:
         print("Created randomly initialized model")
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = model.to(device)
+    print(f"Model will run on: {device}")
+    
     return model    

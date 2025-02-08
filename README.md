@@ -30,9 +30,9 @@ At the moment, the only submodule is `cnn_virus`.
     - `utils`: other utility functions
 
 ***Note***: This package started as `metagentoools`, using keras 2 and
-tensorflow. Now with keras 3, it is possible to user pytorch as a
-backend and the package is ported to `metagentorch`. This is the active
-package, with `metagentools` currently no longer maintained.
+tensorflow. Now with keras 3, it is possible to use pytorch as a backend
+and the package is ported to `metagentorch`. This is the active package,
+with `metagentools` currently no longer maintained.
 
 ***Disclaimer***: This repository is currently under development and is
 offered as-is. Please note that certain functions or modules might raise

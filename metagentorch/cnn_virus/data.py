@@ -122,7 +122,7 @@ class FastaFileReader(TextFileBaseReader):
         for d in self:
             dfn_line = d['definition line']
             seq = d['sequence']
-            metadata = self._parse_text_fn(dfn_line, self.re_pattern, self.re_keys)
+            metadata = self._parse_text_fn(dfn_line, self.re_pattern)
             if add_seq: metadata['sequence'] = seq         
             parsed[metadata['seqid']] = metadata
                         
@@ -156,7 +156,7 @@ class FastaFileReader(TextFileBaseReader):
         return i+1
 
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 91
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 92
 class FastqFileReader(TextFileBaseReader):
     """Iterator going through a fastq file's sequences and return each section + prob error as a dict"""
     def __init__(
@@ -226,7 +226,7 @@ class FastqFileReader(TextFileBaseReader):
 
         return parsed
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 106
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 107
 class AlnFileReader(TextFileBaseReader):
     """Iterator going through an ALN file"""
     def __init__(
@@ -423,7 +423,7 @@ class AlnFileReader(TextFileBaseReader):
             # We used the iterator, now we need to reset it to make all lines available
             self.reset_iterator()
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 143
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 144
 class TextFileDataset(IterableDataset):
     """Load data from text file and yield (BHE sequence tensor, (label OHE tensor, position OHE tensor))"""
 
@@ -462,7 +462,7 @@ class TextFileDataset(IterableDataset):
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 152
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 153
 class AlnFileDataset(IterableDataset):
     """Load data and metadata from ALN file, yield BHE sequence, OHE label, OHE position tensors + metadata
 
@@ -516,19 +516,39 @@ class AlnFileDataset(IterableDataset):
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 161
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 162
 def split_kmer_batch_into_50mers(
-    kmer: torch.Tensor        # tensor representing a batch of k-mer reads, BHE format, shape [b, k, 5]
-    ) -> torch.Tensor:
+    kmer_b: torch.Tensor ,                      # tensor representing a batch of k-mer reads, BHE format, shape [b, k, 5]
+    labels: tuple[torch.Tensor, torch.Tensor]|None = None,    # optional tuple with tensor for label and position batches
+    ) -> tuple[torch.Tensor,tuple]: # batch tensor for 50-mer reads, (optional) labels and positions batch tensor
     """Convert a batch of k-mer reads into 50-mer reads, by shifting the k-mer one base at a time.
 
-    Shapes: for a batch of `b` k-mer reads, returns a batch of `b * (k - 49)` 50-mer reads
+    Shapes: 
+    
+      - kmer_b:             [b,k,5]         ->  [b * (k - 49), 50, 5]
+      - label/position_b:   [b, nb_class]   ->  [b * (k - 49), nb_class]
 
     Technical Note: we use advanced indexing of the tensor to create the 50-mer and roll them, with no loop.
     """
-    b = kmer.shape[0]
-    k = kmer.shape[1]
+    b = kmer_b.shape[0]
+    k = kmer_b.shape[1]
     n = k - 49
+
+    # Verify inputs
+    if labels is None:
+        handle_reads_only = True
+    else:
+        handle_reads_only = False
+        if len(labels) != 2:
+            raise ValueError(f"labels must be a tuple of 2 tensors, got {len(labels)}")
+        label_b, position_b = labels
+        if label_b.shape[0] != b:
+            raise ValueError(f"label batch has shape {label_b.shape}, expected {b}")
+        if position_b.shape[0] != b:
+            raise ValueError(f"position batch has shape {position_b.shape}, expected {b}")
+
+    # Handle batch or k-mer reads    
+
     # Create an array of indices for rolling
     idx_rows = np.arange(n)[:, None]    # shape (n, 1) broadcast n rows to create the split effect
     idx_bases = np.arange(k)            # shape (k) creates the shifting effect
@@ -536,16 +556,22 @@ def split_kmer_batch_into_50mers(
     rolled_indices = indices  % k       # shape (n, k) Modulo to create the rolling effect
 
     # Create a rolled tensor using broadcasting
-    rolled_tensor = kmer[:, rolled_indices, :].reshape(-1,k, 5)
+    rolled_tensor = kmer_b[:, rolled_indices, :].reshape(-1,k, 5)
 
-    return rolled_tensor[:, :50,:] # keep only the first 50 bases
+    # Handle labels and positions
+    if handle_reads_only:
+        return rolled_tensor[:, :50,:],(torch.empty(0),torch.empty([b*n, 10]))
+    else:
+        label_b = label_b.repeat_interleave(n, dim=0)
+        position_b = position_b.repeat_interleave(n, dim=0)
+        return rolled_tensor[:, :50,:], (label_b, position_b)
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 181
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 182
 def combine_predictions(
-    label_probs: torch.Tensor,   # Probabilities for the labels classes for each 50-mer
-    pos_probs: torch.Tensor,     # Probabolities for the position classes for each 50-mer
-    threshold: float = 0.9       # Threshold to consider a prediction as valid
-    ):
+    label_probs: torch.Tensor,              # Probabilities for the labels classes for each 50-mer (shape: [bs, k-49,187])
+    pos_probs: torch.Tensor,                # Probabilities for the position classes for each 50-mer (shape: [bs, k-49,10])
+    threshold: float = 0.9,                  # Threshold to consider a prediction as valid
+    ) -> tuple[torch.Tensor, torch.Tensor]: # Predicted labels and positions for each read (shape: [bs, 187], [bs, 10])
     """Combine a batch of 50-mer probabilities into one batch of final prediction for label and position
 
     Note: the input must be of shape (batch_size, n, c) where n is k-49 and c is the nb of labels or positions
@@ -556,7 +582,6 @@ def combine_predictions(
     assert label_probs.dim() == pos_probs.dim(), "Input do not have the same nb of dimensions"
 
     if label_probs.dim() != 3:
-        is_batch = False
         print('Converting probability tensors to 3 dimensions')
         label_probs = label_probs.unsqueeze(0)
         pos_probs = pos_probs.unsqueeze(0)
@@ -594,12 +619,9 @@ def combine_predictions(
     combined_labels = most_common_value(label_preds, invalid_labels_filter)
     combined_pos = most_common_value(pos_preds, invalid_labels_filter)
 
-    # Concatenate combined_label and combined_position
-    combined_preds = torch.cat([combined_labels, combined_pos], dim=1)
+    return combined_labels.squeeze(), combined_pos.squeeze()
 
-    return combined_preds if is_batch else combined_preds.squeeze(0)
-
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 188
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 189
 def combine_prediction_batch(*args, **kwargs):
     """Deprecated"""
     msg = """

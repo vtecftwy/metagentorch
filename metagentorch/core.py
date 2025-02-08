@@ -476,9 +476,7 @@ class TextFileBaseReader:
         # Currently assumes the iterator generates a dictionary with key/values
         # TODO: extend to iterator output as simple string.
         self.text_to_parse_key = None
-        project_root = ProjectFileSystem().project_root
-        self.parsing_rules_json = project_root / 'default_parsing_rules.json'
-        # self.parsing_rules_json = Path(f"{PACKAGE_ROOT}/default_parsing_rules.json")
+        self.parsing_rules_json = ProjectFileSystem().project_root / 'default_parsing_rules.json'
         self.re_rule_name = None
         self.re_pattern = None       # regex pattern to use to parse text
         self.re_keys = None          # keys (re group names) to parse text
@@ -528,68 +526,39 @@ class TextFileBaseReader:
     def _parse_text_fn(
         self,
         txt:str,         # text to parse
-        pattern:str,     # regex pattern to apply to parse the text
-        keys:list[str],  # list of keys: keys are both the regex match group names and the corresponding output dict keys
-        # TODO: remove the keys parameter and use the keys from the parsing rules json file
+        pattern:str,     # regex pattern to apply to parse the text, must include groups
     )-> dict:            # parsed metadata in key/value format
-        """Basic parser function parsing metadata from string, using regex pattern. Return a metadata dictionary."""
+        """Parsing metadata from string, using regex pattern. Return a metadata dictionary."""
+        p = re.compile(pattern)
+        keys = list(p.groupindex.keys())
+        if len(keys)< 1: 
+            raise ValueError(f"Pattern must include at least one group")
 
-        #  TODO: refactor this function using groupdict() and using keys from the regex pattern. See code in comment below
-        # p = re.compile(pattern)
-        # keys = p.groupindex.keys()
-        # match = p.search(txt)
-        # if match is not None:
-        #     metadata = match.groupdict() 
-
-        matches = re.match(pattern, txt)
-        metadata = {}
-        if matches is not None:
-            for g in sorted(keys):
-                m = matches.group(g)
-                metadata[g] = m.replace('\t', ' ').strip() if m is not None else None
-        
-        else: 
-            # TODO: review hack below, to avoid error when missing metadata such as 'species name'.
-            # Current code tries to recover by saving the entire line in the fist key, expected to be the seqid or refseid
-            # if txt:
-            #     metadata[keys[0]] = txt.replace('\t', ' ').strip() if txt is not None else None
-            # else:
-            raise ValueError(f"No match on this line")
+        match = p.search(txt)
+        if match is not None:
+            metadata = match.groupdict()
+        else:
+            metadata = {k:'' for k in keys}
         return metadata
 
     def parse_text(
         self,
         txt:str,                    # text to parse
         pattern:str|None=None,      # If None, uses standard regex pattern to extract metadata, otherwise, uses passed regex
-        keys:list[str]|None=None,   # If None, uses standard regex list of keys, otherwise, uses passed list of keys (str)
+        # keys:list[str]|None=None,   # If None, uses standard regex list of keys, otherwise, uses passed list of keys (str)
     )-> dict:                       # parsed metadata in key/value format
-        """Parse text using regex pattern and keys. Return a metadata dictionary.
-        
-        The passed text is parsed using the regex pattern. The method return a dictionary in the format:
-
-            {
-                'key_1': 'metadata 1',
-                'key_2': 'metadata 2',
-                ...
-            }
-        
-        """
-        # TODO: remove parameter keys as in _parse_text_fn
-        if pattern is None and keys is None:
-            if self.re_pattern is not None and self.re_keys is not None:
-                return self._parse_text_fn(txt, self.re_pattern, self.re_keys)
+        """Parse text using regex pattern with groups. Return a metadata dictionary."""
+        if pattern is None:
+            if self.re_pattern is not None:
+                return self._parse_text_fn(txt, self.re_pattern)
             else:
                 raise ValueError('attribute re_pattern and re_keys are still None')
-        elif pattern is None or keys is None:
-            raise ValueError('pattern and keys must be either both None or both have a value')
         else:
-            return self._parse_text_fn(txt, pattern, keys)
-        
+            return self._parse_text_fn(txt, pattern)        
         
     def set_parsing_rules(
         self,
         pattern: str|None=None,     # regex pattern to apply to parse the text, search in parsing rules json if None
-        keys: list[str]|None=None,  # list of keys/group for regex, search in parsing rules json if None
         verbose: bool=False         # when True, provides information on each rule
     )-> None:
         """Set the standard regex parsing rule for the file.
@@ -616,7 +585,7 @@ class TextFileBaseReader:
         if self.text_to_parse_key is None:
             msg = """
             `text_to_parse_key` is not defined in this class. 
-            It is not possible to set a parsing rule.
+            It is not possible to set a parsing rule. Must be define, e.g. 'definition line'
             """
             warnings.warn(msg, category=UserWarning)
             return
@@ -626,18 +595,20 @@ class TextFileBaseReader:
         text_to_parse = first_output[self.text_to_parse_key]
         divider_line = f"{'-'*80}"
 
-        if pattern is not None and keys is not None:
+        if pattern is not None:
+            re_keys = list(re.compile(pattern).groupindex.keys())
+            if len(re_keys) < 1: raise ValueError(f"Pattern must include at least one group")
             try:
-                metadata_dict = self.parse_text(text_to_parse, pattern, keys)
+                metadata_dict = self.parse_text(text_to_parse, pattern)
                 self.re_rule_name = 'Custom Rule'
                 self.re_pattern = pattern
-                self.re_keys = keys
+                self.re_keys = re_keys
                 if verbose:
                     print(divider_line)
                     print(f"Custom rule was set for this instance.")
+                    print(f"{self.re_rule_name}: {self.re_pattern}")
             except Exception as err: 
-                raise ValueError(f"The pattern generates the following error:\n{err}")
-                
+                raise ValueError(f"The pattern generates the following error:\n{err}")      
         else:
             # Load all existing rules from json file
             with open(self.parsing_rules_json, 'r') as fp:
@@ -646,22 +617,24 @@ class TextFileBaseReader:
             # test all existing rules and keep the one with highest number of matches
             max_nbr_matches = 0
             for k, v in parsing_rules.items():
-                re_pattern = v['pattern']
-                re_keys = v['keys'].split(' ')
+                re_pattern:str = v['pattern']
+                re_keys = list(re.compile(re_pattern).groupindex.keys())
                 try:
-                    metadata_dict = self.parse_text(text_to_parse, re_pattern, re_keys)
-                    nbr_matches = len(metadata_dict)
+                    metadata_dict = self.parse_text(text_to_parse, re_pattern)
+                    nbr_matches = len([k for k,v in metadata_dict.items() if v is not None and v !=''])
                     if verbose:
                         print(divider_line)
-                        print(f"Rule <{k}> generated {nbr_matches:,d} matches")
+                        # print(f"Rule <{k}> generated {nbr_matches:,d} matches")
+                        print(f"{nbr_matches:,d} matches generated with rule <{k}> ")
                         print(divider_line)
                         print(re_pattern)
                         print(re_keys)
+                        print(metadata_dict)
 
-                    if len(metadata_dict) > max_nbr_matches:
+                    if nbr_matches > max_nbr_matches:
                         self.re_pattern = re_pattern
                         self.re_keys = re_keys
-                        self.re_rule_name = k    
+                        self.re_rule_name = k   
                 except Exception as err:
                     if verbose:
                         print(divider_line)
@@ -673,7 +646,7 @@ class TextFileBaseReader:
                 msg = """
         None of the saved parsing rules were able to extract metadata from the first line in this file.
         You must set a custom rule (pattern + keys) before parsing text, by using:
-            `self.set_parsing_rules(custom_pattern, custom_list_of_keys)`
+            `self.set_parsing_rules(custom_pattern)`
                 """
                 warnings.warn(msg, category=UserWarning)
             
