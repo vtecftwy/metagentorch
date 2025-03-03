@@ -212,7 +212,7 @@ class FastqFileReader(TextFileBaseReader):
         for d in self:
             dfn_line = d['definition line']
             seq, q_scores, prob_e = d['sequence'], d['read_qscores'], d['probs error']
-            metadata = self._parse_text_fn(dfn_line, self.re_pattern, self.re_keys)
+            metadata = self._parse_text_fn(dfn_line, self.re_pattern)  # type: ignore
             if add_readseq: metadata['readseq'] = seq         
             if add_qscores: metadata['read_qscores'] = q_scores
             if add_probs_error: metadata['probs error'] = prob_e
@@ -330,22 +330,21 @@ class AlnFileReader(TextFileBaseReader):
     def parse_header_reference_sequences(
         self,
         pattern:str|None=None,     # regex pattern to apply to parse the reference sequence info
-        keys:list[str]|None=None,  # list of keys: keys are both regex match group names and corresponding output dict keys 
+        # keys:list[str]|None=None,  # list of keys: keys are both regex match group names and corresponding output dict keys 
         )->dict[str]:                  # parsed metadata in key/value format
         """Extract metadata from all header reference sequences"""
-        if pattern is None and keys is None:
-            pattern, keys = self.re_header_pattern, self.re_header_keys
+        if pattern is None:
+            pattern = self.re_header_pattern # type: ignore
         parsed = {}
         for seq_dfn_line in self.header['reference sequences']:
-            metadata = self.parse_text(seq_dfn_line, pattern, keys)
+            metadata = self.parse_text(seq_dfn_line, pattern)
             parsed[metadata['refseqid']] = metadata
             
         return parsed       
         
     def set_header_parsing_rules(
         self,
-        pattern: str|bool=None,   # regex pattern to apply to parse the text, search in parsing rules json if None
-        keys: list[str]=None,     # list of keys/group for regex, search in parsing rules json if None
+        pattern: str|None=None,   # regex pattern to apply to parse the text, search in parsing rules json if None
         verbose: bool=False       # when True, provides information on each rule
     )-> None:
         """Set the regex parsing rule for reference sequence in ALN header.
@@ -365,39 +364,40 @@ class AlnFileReader(TextFileBaseReader):
         text_to_parse = self.header['reference sequences'][0]
         divider_line = f"{'-'*80}"
 
-        if pattern is not None and keys is not None:  # When specific pattern and keys are passed
+        if pattern is not None:  # When specific pattern is passed
+            re_keys = list(re.compile(pattern).groupindex.keys())
+            if len(re_keys) < 0: raise ValueError(f"Pattern must have a least one group")
             try:
-                metadata_dict = self.parse_text(text_to_parse, pattern, keys)
+                metadata_dict = self.parse_text(text_to_parse, pattern)
                 self.re_header_rule_name = 'Custom Rule'
                 self.re_header_pattern = pattern
-                self.re_header_keys = keys
+                self.re_header_keys = re_keys
                 if verbose:
                     print(divider_line)
                     print(f"Custom rule was set for header in this instance.")
             except Exception as err: 
                 raise ValueError(f"The pattern generates the following error:\n{err}")
-                
         else:  # automatic rule selection among rules saved in json file
             # Load all existing rules from json file
             with open(P2JSON, 'r') as fp:
                 parsing_rules = json.load(fp)
-                
+            
             # test all existing rules and keep the one with highest number of matches
             max_nbr_matches = 0
             for k, v in parsing_rules.items():
                 re_header_pattern = v['pattern']
                 re_header_keys = v['keys'].split(' ')
                 try:
-                    metadata_dict = self.parse_text(text_to_parse, re_header_pattern, re_header_keys)
-                    nbr_matches = len(metadata_dict)
+                    metadata_dict = self.parse_text(text_to_parse, re_header_pattern)
+                    nbr_matches = len([k for k,v in metadata_dict.items() if v is not None and v !=''])
                     if verbose:
                         print(divider_line)
                         print(f"Rule <{k}> generated {nbr_matches:,d} matches")
                         print(divider_line)
                         print(re_header_pattern)
                         print(re_header_keys)
-
-                    if len(metadata_dict) > max_nbr_matches:
+                        print(metadata_dict)
+                    if nbr_matches > max_nbr_matches:
                         self.re_header_pattern = re_header_pattern
                         self.re_header_keys = re_header_keys
                         self.re_header_rule_name = k    
@@ -488,18 +488,31 @@ class AlnFileDataset(IterableDataset):
     
     def __init__(
         self,
-        p2file:str|Path,            # path to the file to read
-        label:int = 118,            # label for this batch (assuming all reads are from the same species)
-        return_metadata:bool=False  # yield each read metadata as a dictionary when Trud
+        p2file:str|Path,                # path to the file to read
+        label:int = 118,                # label for this batch (assuming all reads are from the same species)
+        return_metadata:bool = False,     # yield each read metadata as a dictionary when True
+        refseqid:str = '',         # refseqid to filter reference sequence (default is no filtering)
     ):
         self.p2file = safe_path(p2file)
         self.aln = AlnFileReader(self.p2file)
         self.label = label
         self.return_metadata = return_metadata
+        self.filter_reads = refseqid != ''
+        self.refseqid = refseqid
+        if self.filter_reads:
+            if self.refseqid not in self.aln.ref_sequences.keys():
+                raise ValueError(f"refseqid must be one of {self.aln.ref_sequences.keys()}")
+            else:
+                print(f"Filtering reads to only keep those generated from refseqid {self.refseqid}")
 
     def __iter__(self):
-        for d in self.aln:
+        for i, d in enumerate(self.aln):
             metadata = self.aln.parse_definition_line_with_position(d['definition line'])
+            refseqid = metadata['refseqid']
+            # filter out reads not aligned to the refseqid of interest
+            if self.filter_reads and refseqid != self.refseqid: 
+                # print(f"Skipping {i+1}: {metadata['readid']} from  {refseqid}")
+                continue
             seq = d['read_seq_aligned']
             seq_bhe = torch.tensor(list(map(self._bhe_fn, seq)))
             lbl_ohe = torch.zeros(self.nb_labels)
@@ -507,6 +520,7 @@ class AlnFileDataset(IterableDataset):
             pos = metadata['read_pos']
             pos_ohe = torch.zeros(self.nb_pos)
             pos_ohe[int(pos-1)] = 1
+            # print(f"Yielding {i+1}: {metadata['readid']} from  {refseqid}")
             if self.return_metadata:
                 yield seq_bhe, (lbl_ohe, pos_ohe), metadata
             else:   
@@ -516,7 +530,7 @@ class AlnFileDataset(IterableDataset):
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 162
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 164
 def split_kmer_batch_into_50mers(
     kmer_b: torch.Tensor ,                      # tensor representing a batch of k-mer reads, BHE format, shape [b, k, 5]
     labels: tuple[torch.Tensor, torch.Tensor]|None = None,    # optional tuple with tensor for label and position batches
@@ -566,7 +580,7 @@ def split_kmer_batch_into_50mers(
         position_b = position_b.repeat_interleave(n, dim=0)
         return rolled_tensor[:, :50,:], (label_b, position_b)
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 182
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 184
 def combine_predictions(
     label_probs: torch.Tensor,              # Probabilities for the labels classes for each 50-mer (shape: [bs, k-49,187])
     pos_probs: torch.Tensor,                # Probabilities for the position classes for each 50-mer (shape: [bs, k-49,10])
@@ -621,7 +635,7 @@ def combine_predictions(
 
     return combined_labels.squeeze(), combined_pos.squeeze()
 
-# %% ../../nbs-dev/03_cnn_virus_data.ipynb 189
+# %% ../../nbs-dev/03_cnn_virus_data.ipynb 191
 def combine_prediction_batch(*args, **kwargs):
     """Deprecated"""
     msg = """
