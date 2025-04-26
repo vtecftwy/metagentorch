@@ -11,6 +11,7 @@ __all__ = ['CODE_ROOT', 'PACKAGE_ROOT', 'OriginalLabels', 'FastaFileReader', 'Fa
 import collections
 import json
 import os
+import random
 import re
 import warnings
 from functools import partial, partialmethod
@@ -514,7 +515,20 @@ class AlnFileDataset(IterableDataset):
                 # print(f"Skipping {i+1}: {metadata['readid']} from  {refseqid}")
                 continue
             seq = d['read_seq_aligned']
-            seq_bhe = torch.tensor(list(map(self._bhe_fn, seq)))
+            K = random.choice('GT')
+            M = random.choice('AC')
+            R = random.choice('AG')
+            V = random.choice('ACG')
+            W = random.choice('AT')
+            Y = random.choice('CT')
+            seq = seq.replace('K',K).replace('M',M).replace('R',R).replace('V',V).replace('W',W).replace('Y',Y)
+            xxx = list(map(self._bhe_fn, seq))
+            if len(xxx) != 150: 
+                print(f"{i}. {len(xxx)} {seq}")
+                print(f"cropping {i}: {metadata['readid']} from {refseqid} because length is {len(xxx)}")
+                xxx = xxx[:150]
+            seq_bhe = torch.tensor(xxx)
+            # seq_bhe = torch.tensor(list(map(self._bhe_fn, seq)))
             lbl_ohe = torch.zeros(self.nb_labels)
             lbl_ohe[int(self.label)] = 1
             pos = metadata['read_pos']
@@ -529,6 +543,7 @@ class AlnFileDataset(IterableDataset):
     def _bhe_fn(self, base:str) -> list[int]:
         """Convert a base to a one hot encoding vector"""
         return self.base2encoding[base]
+
 
 # %% ../../nbs-dev/03_cnn_virus_data.ipynb 164
 def split_kmer_batch_into_50mers(
